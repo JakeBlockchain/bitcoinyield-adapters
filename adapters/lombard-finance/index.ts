@@ -1,41 +1,21 @@
 /**
- * Lombard Finance adapter — fully on-chain.
- *
- * TVL: LBTC ERC-20 totalSupply on Ethereum mainnet, valued at the LBTC/BTC
- *      exchange rate from the token's own getRate() (BTC per LBTC, 18
- *      decimals) — i.e. the BTC backing of Ethereum-circulating LBTC only,
- *      NOT protocol-wide backing. LBTC is natively issued cross-chain
- *      (Base, BNB, Sonic, Sui, ...) via CCIP burn-and-mint, so this
- *      undercounts the protocol-wide figure; getting that means paging
- *      Lombard's `/api/v1/addresses` custody list and summing each BTC
- *      balance. Left Ethereum-only intentionally.
- * APR: 30-day annualized growth of getRate(), measured ourselves via
- *      archive reads. Lombard retired Babylon staking in August 2026 and
- *      moved LBTC yield to a Bitwise-managed covered-call strategy (target
- *      2.5% net) that accrues through this exchange rate. The rate is
- *      posted by Lombard's consortium oracle, but reading it on-chain
- *      survives API restructurings (their old `estimated-apy` endpoint was
- *      gutted in the transition, which broke this adapter's previous
- *      version) and lets us measure holder-experienced yield directly
- *      instead of trusting their reported figure.
- *
- * During the strategy's deployment ramp the measured figure can be ~0 or
- * slightly negative (re-marks against near-zero accrual), so apr is
- * floored at 0 with the raw figure kept in metadata — allowZeroRate is only
- * set when the raw figure is negative, so a frozen rate feed reading
- * exactly 0 growth still fails loudly in normalize. The 7-day window is
- * recorded in metadata to observe whether it stabilizes enough to become
- * the headline once the strategy is fully deployed.
+ * Lombard Finance: provider-reported 30-day net APY from the transparency
+ * dashboard. Ethereum-only TVL remains totalSupply() * getRate().
+ * Archive exchange-rate growth is retained separately for comparison;
+ * it is not equivalent to the provider's published APY.
  */
 
 import {
   defineAdapter,
   ethereum,
+  http,
   math,
   readShareGrowth,
   requirePositive,
   BLOCKS_PER_30D,
 } from "@bitcoinyield/adapters";
+
+import { parseTransparencyReport, TRANSPARENCY_REPORT_URL } from "./report.js";
 
 const LBTC_ADDRESS = "0x8236a87084f8B84306f72007F36F2618A5634494" as const;
 const RATE_DECIMALS = 18;
@@ -65,7 +45,7 @@ export default defineAdapter({
   async fetch() {
     const client = ethereum.getClient();
 
-    const [calls, growth7d, growth30d] = await Promise.all([
+    const [calls, growth7d, growth30d, reportData] = await Promise.all([
       ethereum.multicall([
         {
           address: LBTC_ADDRESS,
@@ -99,6 +79,7 @@ export default defineAdapter({
         blocksBack: BLOCKS_PER_30D.ethereum,
         decimals: RATE_DECIMALS,
       }),
+      http.get<unknown>(TRANSPARENCY_REPORT_URL),
     ]);
 
     const [supplyCall, decimalsCall, rateCall] = calls;
@@ -113,7 +94,10 @@ export default defineAdapter({
     }
 
     const ethereumSupply = requirePositive(
-      math.fromUnits(supplyCall.result as bigint, decimalsCall.result as number),
+      math.fromUnits(
+        supplyCall.result as bigint,
+        decimalsCall.result as number,
+      ),
       "lbtc.totalSupply",
     );
     const btcPerLbtc = requirePositive(
@@ -125,37 +109,37 @@ export default defineAdapter({
       "tvlBtc",
     );
 
-    const headline = growth30d.hasBaseline
-      ? { window: "30d" as const, growth: growth30d }
-      : growth7d.hasBaseline
-        ? { window: "7d" as const, growth: growth7d }
-        : null;
-
-    if (!headline) {
-      throw new Error(
-        "LBTC rate history unavailable on this RPC; need archive access for the 30d or 7d window",
-      );
-    }
-
-    const rawApy = headline.growth.apy;
+    const report = parseTransparencyReport(reportData);
 
     return [
       {
         symbol: "LBTC",
         tvlBtc,
-        rate: Math.max(rawApy, 0),
+        rate: report.apyPct,
         rateType: "apy",
         metadata: {
-          ...(rawApy < 0 && { allowZeroRate: true }),
-          rawApy,
-          rateWindow: headline.window,
-          windowDays: headline.growth.elapsedDays,
-          rateThen: headline.growth.sharePriceThen,
+          ...(report.apyPct === 0 && { allowZeroRate: true }),
+          rateWindow: "30d",
+          rateBasis: "provider-reported-net",
+          rateSource: TRANSPARENCY_REPORT_URL,
+          sourceAsOf: report.asOf,
+          sourceCreatedAt: report.createdAt,
+          sourceReportId: report.id,
+          sourceApyDecimal: report.apyDecimal,
+          sourceFetchedAt: new Date().toISOString(),
+          onchainWindowDays7d: growth7d.hasBaseline
+            ? growth7d.elapsedDays
+            : null,
+          onchainWindowDays30d: growth30d.hasBaseline
+            ? growth30d.elapsedDays
+            : null,
+          onchainRateThen30d: growth30d.hasBaseline
+            ? growth30d.sharePriceThen
+            : null,
           apy7d: growth7d.hasBaseline ? growth7d.apy : null,
           apy30d: growth30d.hasBaseline ? growth30d.apy : null,
           linearApr7d: growth7d.hasBaseline ? growth7d.apr : null,
           linearApr30d: growth30d.hasBaseline ? growth30d.apr : null,
-          rateSource: `onchain-${headline.window}-rate-growth`,
           targetApyPct: TARGET_APY_PCT,
           contractAddress: LBTC_ADDRESS,
           decimals: decimalsCall.result,
