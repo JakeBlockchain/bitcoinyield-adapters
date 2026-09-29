@@ -18,6 +18,7 @@ import type { Address } from "viem";
 import { defineAdapter } from "../../src/core/defineAdapter.js";
 import type { Adapter } from "../../src/core/types.js";
 import * as ethereum from "../../src/core/utils/chains/ethereum.js";
+import * as http from "../../src/core/utils/http.js";
 import * as math from "../../src/core/utils/math.js";
 import * as prices from "../../src/core/utils/prices.js";
 import { requirePositive } from "../../src/core/utils/validators.js";
@@ -162,6 +163,83 @@ export function calculateYieldBasisTokenMetrics({
   };
 }
 
+interface YieldBasisProtocolMetricsResponse {
+  success: boolean;
+  data?: { bucketStart?: number; ybPriceRaw?: string };
+}
+
+// Protocol metrics are bucketed hourly; a few missed buckets is tolerable,
+// older than this means their indexer stalled and the price is frozen.
+const MAX_YB_PRICE_AGE_SECONDS = 6 * 60 * 60;
+
+export function parseYbPriceFromProtocolMetrics(
+  response: YieldBasisProtocolMetricsResponse,
+  nowMs: number = Date.now(),
+): number {
+  const { bucketStart, ybPriceRaw } = response.data ?? {};
+  if (!response.success || typeof bucketStart !== "number") {
+    throw new Error("YieldBasis protocol metrics: malformed response");
+  }
+  const ageSeconds = Math.floor(nowMs / 1000) - bucketStart;
+  if (ageSeconds > MAX_YB_PRICE_AGE_SECONDS) {
+    throw new Error(
+      `YieldBasis protocol metrics: ybPriceRaw is stale ` +
+        `(bucketStart ${bucketStart}, ${Math.floor(ageSeconds / 3600)}h old)`,
+    );
+  }
+  // 1e18-scaled integer string, like every other *Raw field on this API.
+  if (typeof ybPriceRaw !== "string" || !/^\d+$/.test(ybPriceRaw)) {
+    throw new Error(
+      `YieldBasis protocol metrics: ybPriceRaw is not a 1e18-scaled integer: "${ybPriceRaw}"`,
+    );
+  }
+  return requirePositive(math.fromUnits(ybPriceRaw, 18), "ybPriceRaw");
+}
+
+// CoinGecko 403s requests from Vercel, so it goes last. Yield Basis's own
+// API leads; Coinbase covers it being down.
+const YB_PRICE_SOURCES: Array<{ label: string; load: () => Promise<number> }> =
+  [
+    {
+      label: "yieldbasis",
+      load: async () =>
+        parseYbPriceFromProtocolMetrics(
+          await http.get<YieldBasisProtocolMetricsResponse>(
+            "https://api.yieldbasis.com/v1/analytics/protocol/metrics",
+            { retries: 1 },
+          ),
+        ),
+    },
+    {
+      label: "coinbase",
+      load: async () => {
+        const res = await http.get<{ data?: { amount?: string } }>(
+          "https://api.coinbase.com/v2/prices/YB-USD/spot",
+          { retries: 1 },
+        );
+        return requirePositive(res.data?.amount, "coinbase YB-USD");
+      },
+    },
+    { label: "coingecko", load: () => prices.getToken("yield-basis") },
+  ];
+
+export async function fetchYbPriceUsd(): Promise<number> {
+  const failures: string[] = [];
+  for (const source of YB_PRICE_SOURCES) {
+    try {
+      return await source.load();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push(`${source.label}: ${message.slice(0, 200)}`);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[yieldbasis] YB price from ${source.label} failed: ${message}`,
+      );
+    }
+  }
+  throw new Error(`All YB price sources failed — ${failures.join("; ")}`);
+}
+
 export const productionYieldBasisTokenDependencies: YieldBasisTokenDependencies =
   {
     async getLatestBlock() {
@@ -194,7 +272,7 @@ export const productionYieldBasisTokenDependencies: YieldBasisTokenDependencies 
       });
     },
     async getYbPriceUsd() {
-      return await prices.getToken("yield-basis");
+      return await fetchYbPriceUsd();
     },
     async getBtcPriceUsd() {
       return await prices.getBtc();
