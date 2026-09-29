@@ -39,6 +39,9 @@ export async function runAdapter(
 
   try {
     const ctx = buildFetchContext(adapter);
+    // Adapters that value TVL via prices.getBtc() read this instead of
+    // fetching their own.
+    if (options.btcPrice !== undefined) prices.primeBtc(options.btcPrice);
 
     const [raw, btcPrice, previous] = await Promise.all([
       adapter.fetch(ctx),

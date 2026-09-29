@@ -23,6 +23,7 @@ import { runStalenessMonitor } from "./core/monitor/staleness.js";
 import { DiscordNotifier } from "./core/notifications/discord.js";
 import { runAdapter } from "./core/runAdapter.js";
 import { HttpStorage } from "./core/storage/http.js";
+import * as prices from "./core/utils/prices.js";
 import { LoggingStorage } from "./core/storage/logging.js";
 import type { Adapter, Storage } from "./core/types.js";
 
@@ -75,6 +76,13 @@ const adapterFunctions = adapterList.map((adapter: Adapter) =>
         runAdapter(adapter, {
           storage,
           notifier,
+          // Fetched once by the scheduler; absent on dashboard-invoked
+          // events or when every price source failed, and runAdapter
+          // then fetches its own.
+          btcPrice:
+            typeof event.data?.btcPrice === "number"
+              ? event.data.btcPrice
+              : undefined,
           // Pin to the event, never the wall clock: the main app dedups on
           // (slug, timestamp), so a retried step must produce the same
           // timestamp. event.ts covers dashboard-invoked events that omit
@@ -92,9 +100,24 @@ const scheduler = inngest.createFunction(
   { id: "schedule-adapters" },
   { cron: SCHEDULE_CRON },
   async ({ step }) => {
+    // One price for the whole fan-out: per-adapter fetches from ~20 cold
+    // Lambdas got 429'd by CoinGecko. A failure here doesn't block the run;
+    // adapters then fetch their own (through the same source fallbacks).
+    const btcPrice = await step.run("btc-price", async () => {
+      try {
+        return await prices.getBtc();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[schedule-adapters] BTC price unavailable, adapters will fetch their own: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+      }
+    });
     const events = adapterList.map((a) => ({
       name: `adapter/${a.slug}.run`,
-      data: { triggeredAt: Date.now() },
+      data: { triggeredAt: Date.now(), btcPrice },
     }));
     await step.sendEvent("fan-out", events);
     return {
