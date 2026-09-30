@@ -11,7 +11,7 @@ Adapter for core LBTC, distinct from Lombard Bitcoin Earn. Its headline rate mat
 
 The headline carries `rateBasis: "provider-reported-net"`, `rateWindow: "30d"`, and the endpoint in `rateSource`. Metadata preserves the source decimal, report ID, `as_of`, `created_at`, and retrieval time. Missing/malformed APY, invalid/future timestamps, or reports older than 72 hours fail loudly; no target, legacy estimated-APY, or on-chain-growth fallback is used. The 72-hour limit is an adapter freshness policy allowing delayed daily publication.
 
-A genuine reported zero sets `allowZeroRate`. Negative reported APYs are returned unchanged, **not floored**; the framework's existing nonnegative boundary currently drops such rows. Supporting negative headline rates in storage requires a separate pipeline change.
+A genuine reported zero sets `allowZeroRate`. Negative reported APYs are returned unchanged, **not floored**, and the pipeline stores them (APY rows may go down to -100%).
 
 ## Interpretation
 

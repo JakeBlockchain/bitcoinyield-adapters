@@ -21,6 +21,11 @@ export interface FetchContext {
  * How `rate` annualizes. `apr` is simple (no compounding); `apy` compounds.
  * Report the one the protocol itself publishes, never a conversion — the
  * main app labels the figure with this.
+ *
+ * Window standard: an `apy` is the trailing 30-day realized return and is
+ * reported as-is, negative included (a losing window is what a depositor
+ * would actually get). An `apr` is the trailing 7-day payout rate where the
+ * source exposes a window, and never goes below 0.
  */
 export type RateType = "apr" | "apy";
 

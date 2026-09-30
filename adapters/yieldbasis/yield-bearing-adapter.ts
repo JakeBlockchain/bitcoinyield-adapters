@@ -8,6 +8,9 @@
  * one block (and that block recorded in metadata) so supply and share
  * price cannot mix chain states.
  *
+ * The APY is published as-is, negative included: a losing 30d window means
+ * a depositor exiting now gets back less than they put in.
+ *
  * An analytics API failure fails the whole run, TVL included — normalize
  * requires a rate on every row, so a TVL-only row is not an option.
  */
@@ -194,10 +197,9 @@ export function createYieldBasisYieldBearingAdapter(
       const tvlBtc = math.mul(yieldBearingShares, sharePrice);
       requirePositive(tvlBtc, "tvlBtc");
 
-      const rawApy30d = math.toPercent(
+      const apy = math.toPercent(
         math.fromUnits(thirtyDayApy.apyRaw, RATE_DECIMALS),
       );
-      const apy = Math.max(rawApy30d, 0);
 
       return [
         {
@@ -206,14 +208,12 @@ export function createYieldBasisYieldBearingAdapter(
           rate: apy,
           rateType: "apy",
           metadata: {
-            ...(rawApy30d < 0 && { allowZeroRate: true }),
             rateSource: "yieldbasis-api-trading-apy-30d",
             rateWindow: "30d",
             marketId: config.marketId,
             bucketStart: thirtyDayApy.bucketStart,
             sourceTimestamp: thirtyDayApy.sourceTimestamp,
             rawApy: thirtyDayApy.apyRaw,
-            rawApy30d,
             ltAddress: config.ltAddress,
             assetAddress: config.assetAddress,
             assetDecimals: config.assetDecimals,

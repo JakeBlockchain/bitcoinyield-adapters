@@ -29,8 +29,7 @@ const EXPECTED_CONFIGS = [
       assetDecimals: 8,
     },
     officialApyRaw: "-11320570079601498",
-    expectedApy: 0,
-    expectedRawApy30d: -1.1320570079601498,
+    expectedApy: -1.1320570079601498,
   },
   {
     config: tBtcConfig,
@@ -44,8 +43,7 @@ const EXPECTED_CONFIGS = [
       assetDecimals: 18,
     },
     officialApyRaw: "-5327043249151938",
-    expectedApy: 0,
-    expectedRawApy30d: -0.5327043249151938,
+    expectedApy: -0.5327043249151938,
   },
   {
     config: wBtcConfig,
@@ -60,7 +58,6 @@ const EXPECTED_CONFIGS = [
     },
     officialApyRaw: "9126729331648391",
     expectedApy: 0.9126729331648391,
-    expectedRawApy30d: 0.9126729331648391,
   },
 ] as const;
 
@@ -69,7 +66,6 @@ for (const {
   expected,
   officialApyRaw,
   expectedApy,
-  expectedRawApy30d,
 } of EXPECTED_CONFIGS) {
   test(`${expected.slug} publishes the official 30d trading APY`, async () => {
     assert.deepEqual(config, expected);
@@ -111,11 +107,7 @@ for (const {
       `share-price:${expected.ltAddress}@123`,
       `apy:${expected.marketId}`,
     ]);
-    const { rawApy30d, ...metadata } = row.metadata ?? {};
-    assert.ok(typeof rawApy30d === "number");
-    assert.ok(Math.abs(rawApy30d - expectedRawApy30d) < 1e-12);
-    assert.deepEqual(metadata, {
-      ...(expectedRawApy30d < 0 && { allowZeroRate: true }),
+    assert.deepEqual(row.metadata, {
       rateSource: "yieldbasis-api-trading-apy-30d",
       rateWindow: "30d",
       marketId: expected.marketId,

@@ -40,41 +40,51 @@ function capturingNotifier() {
   return { notifier, alerts };
 }
 
-test("a negative rate is dropped regardless of metadata", async () => {
+test("a negative apy is kept", async () => {
   const { notifier, alerts } = capturingNotifier();
   const result = await applyBoundaries(
-    [row({ rate: -0.37, metadata: { allowNegativeApr: true } })],
+    [row({ rate: -0.37, rateType: "apy" })],
+    "yb-wbtc-yieldbearing",
+    notifier,
+  );
+
+  assert.equal(result.kept.length, 1);
+  assert.equal(alerts.length, 0);
+});
+
+test("a negative apr is dropped", async () => {
+  const { notifier, alerts } = capturingNotifier();
+  const result = await applyBoundaries(
+    [row({ rate: -0.37, rateType: "apr" })],
+    "some-apr-adapter",
+    notifier,
+  );
+
+  assert.equal(result.kept.length, 0);
+  assert.equal(alerts[0]?.threshold, BOUNDARIES.rate.apr.lb);
+});
+
+test("an apy below -100% is dropped", async () => {
+  const { notifier, alerts } = capturingNotifier();
+  const result = await applyBoundaries(
+    [row({ rate: -150, rateType: "apy" })],
     "yb-wbtc-yieldbearing",
     notifier,
   );
 
   assert.equal(result.kept.length, 0);
-  assert.equal(alerts[0]?.threshold, BOUNDARIES.rate.lb);
+  assert.equal(alerts[0]?.threshold, BOUNDARIES.rate.apy.lb);
 });
 
-test("a floored zero with allowZeroRate passes normalize and boundaries", async () => {
+test("a negative apy passes normalize untouched", () => {
   const adapter = { slug: "yb-wbtc-yieldbearing" } as Adapter;
   const rows = normalize(
-    [
-      {
-        symbol: "yb-WBTC",
-        tvlBtc: 129.8,
-        rate: Math.max(-0.37, 0),
-        rateType: "apy",
-        metadata: { allowZeroRate: true, rawApy30d: -0.37 },
-      },
-    ],
+    [{ symbol: "yb-WBTC", tvlBtc: 129.8, rate: -0.37, rateType: "apy" }],
     adapter,
     100_000,
     new Date(),
   );
-  assert.equal(rows[0]?.rate, 0);
-  assert.equal(rows[0]?.metadata?.rawApy30d, -0.37);
-
-  const { notifier, alerts } = capturingNotifier();
-  const result = await applyBoundaries(rows, "yb-wbtc-yieldbearing", notifier);
-  assert.equal(result.kept.length, 1);
-  assert.equal(alerts.length, 0);
+  assert.equal(rows[0]?.rate, -0.37);
 });
 
 test("a zero rate without allowZeroRate still fails loudly", () => {
@@ -88,7 +98,6 @@ test("a zero rate without allowZeroRate still fails loudly", () => {
             tvlBtc: 129.8,
             rate: 0,
             rateType: "apy",
-            metadata: { rawApy30d: 0 },
           },
         ],
         adapter,
@@ -96,7 +105,7 @@ test("a zero rate without allowZeroRate still fails loudly", () => {
         new Date(),
       ),
     /rate=0/,
-    "a frozen share price must not hide behind the floor",
+    "a frozen share price must not store as 0%",
   );
 });
 
@@ -133,8 +142,3 @@ test("normalize carries rateType through to the row", () => {
   );
   assert.equal(out?.rateType, "apr");
 });
-
-// Adapter-level flooring (rate floored to 0, conditional allowZeroRate, raw
-// figure in metadata) is covered by tests/yieldbasis-current-market.test.ts
-// via the negative cbBTC/tBTC fixtures; this file owns the pipeline-level
-// guarantees only.

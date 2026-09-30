@@ -6,12 +6,10 @@
  * LayerZero OFT on Monad; those balances are recorded in metadata and are
  * not added into headline TVL in this first version.
  *
- * Headline `apr` is the 7-day compounded NAV APY so it matches the RWA.xyz
- * 7D APY screen. The 30-day window is retained in metadata. The strategy is
- * actively managed, so a trailing window can legitimately go negative; the
- * apr is floored at 0 with the raw figure kept in metadata (allowZeroRate is
- * only set when the raw figure is negative, so a frozen NAV feed reading
- * exactly 0 growth still fails loudly in normalize).
+ * Headline rate is the 30-day compounded NAV APY (the site-wide APY
+ * standard); the 7-day window is recorded in metadata and only headlines
+ * when the 30d read is unavailable. The strategy is actively managed, so a
+ * trailing window can legitimately go negative and is published as-is.
  */
 
 import {
@@ -121,29 +119,25 @@ export default defineAdapter({
     const nav = requirePositive(math.fromUnits(navRaw, NAV_DECIMALS), "nav");
     const tvlBtc = requirePositive(math.mul(totalSupply, nav), "tvlBtc");
 
-    const headline = growth7d.hasBaseline
-      ? { window: "7d" as const, growth: growth7d }
-      : growth30d.hasBaseline
-        ? { window: "30d" as const, growth: growth30d }
+    const headline = growth30d.hasBaseline
+      ? { window: "30d" as const, growth: growth30d }
+      : growth7d.hasBaseline
+        ? { window: "7d" as const, growth: growth7d }
         : null;
 
     if (!headline) {
       throw new Error(
-        "mHyperBTC NAV history unavailable on this RPC; need archive access for the 7d or 30d window",
+        "mHyperBTC NAV history unavailable on this RPC; need archive access for the 30d or 7d window",
       );
     }
-
-    const rawNavApy = headline.growth.apy;
 
     return [
       {
         symbol: "mHyperBTC",
         tvlBtc,
-        rate: Math.max(rawNavApy, 0),
+        rate: headline.growth.apy,
         rateType: "apy",
         metadata: {
-          ...(rawNavApy < 0 && { allowZeroRate: true }),
-          rawNavApy,
           chain: "ethereum",
           tokenAddress: ETHEREUM_TOKEN,
           dataFeedAddress: ETHEREUM_DATA_FEED,

@@ -47,16 +47,16 @@ Live Ethereum check on 2026-08-19: `totalSupply = 287.005370386145`, `NAV = 1.02
 
 ## APY
 
-Headline `rate` (`rateType: "apy"`) is the 7-day compounded NAV APY, which is the same window RWA.xyz labels `7D APY`.
+Headline `rate` (`rateType: "apy"`) is the 30-day compounded NAV APY, the site-wide APY standard (RWA.xyz labels the same window `30D APY`).
 
 ```text
-growth = navNow / nav7dAgo
-apy7d = (growth ^ (365 / actualElapsedDays) - 1) * 100
+growth = navNow / nav30dAgo
+apy30d = (growth ^ (365 / actualElapsedDays) - 1) * 100
 ```
 
-The adapter also stores the 30-day compounded APY in metadata. If the RPC cannot serve the 7-day historical read, it falls back to the 30-day window. If both fail, the adapter throws instead of writing `rate = 0`.
+The adapter also stores the 7-day compounded APY in metadata. If the RPC cannot serve the 30-day historical read, it falls back to the 7-day window (`metadata.rateWindow` says which). If both fail, the adapter throws instead of writing `rate = 0`.
 
-The strategy is actively managed, so a trailing NAV window can legitimately go negative. The headline `rate` is floored at 0 with the raw figure kept in `metadata.rawNavApy`, and `metadata.allowZeroRate` is set only when the raw figure is negative — a frozen NAV feed reading exactly 0 growth still fails loudly in normalize. Same pattern as the yb-\*-yieldbearing adapters.
+The strategy is actively managed, so a trailing NAV window can legitimately go negative, and is published as-is. A frozen NAV feed reading exactly 0 growth still fails loudly in normalize.
 
 ## Environment
 
@@ -64,7 +64,7 @@ The strategy is actively managed, so a trailing NAV window can legitimately go n
 BITCOINYIELD_RPC_ETHEREUM=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
 ```
 
-Archive or reasonably deep history is required for the 7-day and 30-day NAV windows. Public fallbacks may fail the historical reads.
+Archive or reasonably deep history is required for the 30-day and 7-day NAV windows. Public fallbacks may fail the historical reads.
 
 ## Cost estimate
 
@@ -72,5 +72,5 @@ About 8 JSON-RPC calls per hour:
 
 - 1 multicall for `totalSupply`, `decimals`, and `getDataInBase18`
 - latest block
-- 7-day historical NAV + block
 - 30-day historical NAV + block
+- 7-day historical NAV + block

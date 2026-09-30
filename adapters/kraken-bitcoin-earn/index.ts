@@ -2,10 +2,11 @@
  * Kraken Bitcoin Earn adapter — BoringVault on Ink L2 (chain id 57073).
  *
  * TVL: vault totalSupply × accountant getRate (rate = BTC per share).
- * APR: 7-day annualized rate growth via readShareGrowth, matching the
- *      "Net APY (7D)" window Kraken's public Dune dashboard reports.
- *      Falls back to SEED_APR when the historical read is unavailable
- *      (non-archive RPC) so TVL still records; metadata.rateSource says which.
+ * APY: 30-day compounded accountant-rate growth via readShareGrowth. The
+ *      rate is net of fees and compounds into the share price, so it is an
+ *      APY and can go negative. Kraken's Dune dashboard shows a 7D window;
+ *      we report 30D, the site-wide APY standard. No history, no rate: the
+ *      run fails rather than storing a guess.
  */
 
 import {
@@ -20,12 +21,9 @@ import {
 const BORING_VAULT = "0x7Dee0120739b7ec048B469939EFB178ADbbB19B2";
 const ACCOUNTANT = "0x4Bb6C416a00561ad6657110b76552c42d55Ff1d6";
 
-// Ink produces ~1 block/sec, so 604_800 blocks ≈ 7 days. readShareGrowth
+// Ink produces ~1 block/sec, so 2_592_000 blocks ≈ 30 days. readShareGrowth
 // annualizes by actual block timestamps, so drift only widens the window.
-const INK_BLOCKS_7D = 604_800n;
-
-// Used only when the archive read fails; flagged via metadata.rateSource.
-const SEED_APR = 1.94;
+const INK_BLOCKS_30D = 2_592_000n;
 
 const INK: EvmChainConfig = {
   id: 57073,
@@ -103,7 +101,7 @@ export default defineAdapter({
       address: ACCOUNTANT,
       abi: accountantAbi,
       functionName: "getRate",
-      blocksBack: INK_BLOCKS_7D,
+      blocksBack: INK_BLOCKS_30D,
       decimals: Number(rateDecimals),
     });
 
@@ -111,22 +109,27 @@ export default defineAdapter({
     const rateNow = requirePositive(growth.sharePriceNow, "getRate");
     const tvlBtc = requirePositive(math.mul(shares, rateNow), "tvlBtc");
 
-    const apr = growth.hasBaseline ? growth.apr : SEED_APR;
+    if (!growth.hasBaseline) {
+      throw new Error(
+        "Kraken accountant rate history unavailable on this RPC; need archive access for the 30d window",
+      );
+    }
 
     return [
       {
         symbol: "BTC",
         tvlBtc,
-        rate: apr,
-        rateType: "apr",
+        rate: growth.apy,
+        rateType: "apy",
         metadata: {
           vaultAddress: BORING_VAULT,
           accountantAddress: ACCOUNTANT,
           chainId: INK.id,
           rate: rateNow,
-          rate7dAgo: growth.sharePriceThen,
+          rate30dAgo: growth.sharePriceThen,
           windowDays: growth.elapsedDays,
-          rateSource: growth.hasBaseline ? "onchain-7d" : "seed-fallback",
+          linearApr30d: growth.apr,
+          rateSource: "onchain-30d-rate-apy",
         },
       },
     ];

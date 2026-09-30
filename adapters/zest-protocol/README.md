@@ -12,7 +12,7 @@ Adapter for [Zest Protocol](https://zestprotocol.com), a Bitcoin lending market 
 ## Total APR
 
 ```
-total_apr = supply_apy + stacking_apr
+total_apy = supply_apy + stacking_apr
 ```
 
 ## File structure
