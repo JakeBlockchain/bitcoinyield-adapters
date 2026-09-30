@@ -5,8 +5,9 @@
  *   1. getAmbossStats → completed_size (sats) for TVL
  *   2. getMarketMetrics.lnr_series → daily lnr_yield for APR
  *
- * The current-day series entry is unfinalized (lnr_yield = 0); we pick the
- * latest entry with non-zero yield instead.
+ * APR is the mean of the last 7 finalized daily lnr_yield values (the
+ * site-wide 7D APR standard; single days swing 10x+). The current-day entry
+ * can be unfinalized (lnr_yield = 0), so zero entries are skipped.
  */
 
 import {
@@ -18,6 +19,9 @@ import {
 } from "@bitcoinyield/adapters";
 
 const AMBOSS_API = "https://amboss.space/graphql";
+const APR_WINDOW_DAYS = 7;
+// Tolerate a missed day or two in the series, not a mostly-empty window.
+const MIN_WINDOW_ENTRIES = 5;
 
 const HEADERS = {
   "amboss-client": "amboss-space",
@@ -75,7 +79,8 @@ export default defineAdapter({
 
   async fetch() {
     const fromDate = new Date();
-    fromDate.setDate(fromDate.getDate() - 7);
+    // One spare day so an unfinalized "today" can't leave the window short.
+    fromDate.setDate(fromDate.getDate() - (APR_WINDOW_DAYS + 1));
     const from = fromDate.toISOString().split("T")[0]!;
 
     const [magmaData, lnrData] = await Promise.all([
@@ -100,16 +105,21 @@ export default defineAdapter({
     if (!series || series.length === 0)
       throw new Error("Amboss Magma: no LNR series");
 
-    // Skip unfinalized entries (current day reports lnr_yield = 0), then pick
-    // by date rather than assuming the series' sort order.
-    const finalized = series.filter((e) => parseNumber(e.lnr_yield, 0) > 0);
-    if (finalized.length === 0) {
+    // Skip unfinalized entries, then pick by date rather than assuming the
+    // series' sort order.
+    const window = series
+      .filter((e) => parseNumber(e.lnr_yield, 0) > 0)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, APR_WINDOW_DAYS);
+    if (window.length < MIN_WINDOW_ENTRIES) {
       throw new Error(
-        "Amboss Magma: no finalized lnr_yield entry in the queried window",
+        `Amboss Magma: only ${window.length} finalized lnr_yield entries in the ` +
+          `last ${APR_WINDOW_DAYS + 1} days (need ${MIN_WINDOW_ENTRIES})`,
       );
     }
-    const latest = finalized.reduce((a, b) =>
-      new Date(b.date).getTime() > new Date(a.date).getTime() ? b : a,
+    const meanYield = math.div(
+      math.add(...window.map((e) => parseNumber(e.lnr_yield, 0))),
+      window.length,
     );
 
     return [
@@ -123,16 +133,17 @@ export default defineAdapter({
           requirePositive(stats.completed_size, "completed_size"),
           8,
         ),
-        rate: math.toPercent(parseNumber(latest.lnr_yield, 0)),
+        rate: math.toPercent(meanYield),
         rateType: "apr",
         metadata: {
           completedOrders: stats.completed_orders,
           completedFees: stats.completed_fees,
           averageApr: stats.average_apr,
           magmaLatestApr: stats.latest_apr,
-          lnrYield: latest.lnr_yield,
-          lnr: latest.lnr,
-          lnrDate: latest.date,
+          lnrYield7dMean: meanYield,
+          lnrWindowEntries: window.length,
+          lnrWindowStart: window.at(-1)?.date,
+          lnrWindowEnd: window[0]?.date,
         },
       },
     ];

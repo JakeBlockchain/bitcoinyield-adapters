@@ -5,14 +5,12 @@
  * behind the site's WAF).
  *
  * TVL: latest daily statistics row's btcTvl.
- * APR: Binance's published apr14d headline when present, so the site
- *      matches what users see on Binance's page. Their figure is gross
- *      strategy yield and excludes NAV drawdowns; the net 14-day NAV
- *      return (which can be lower or negative, e.g. July 2026 drawdown)
- *      is always computed from the statistics series and recorded as
- *      metadata.navApr14d. When Binance nulls apr14d (they do whenever
- *      the headline would be unflattering, which took the adapter down
- *      on 2026-07-11), fall back to that NAV figure floored at 0.
+ * APY: net 30-day NAV return from the statistics series, compounded. NAV
+ *      growth is what a holder actually earns, so this can go negative
+ *      (e.g. the July 2026 drawdown) and is published as-is. Binance's own
+ *      apr14d headline is gross strategy yield that excludes NAV drawdowns
+ *      (and is nulled whenever it would be unflattering); it is kept in
+ *      metadata.reportedApr14d for comparison only.
  */
 
 import { defineAdapter, http, math, requirePositive } from "@bitcoinyield/adapters";
@@ -36,7 +34,7 @@ interface BtcyStatRow {
 
 const BAPI = "https://www.binance.com/bapi/earn/v1/public/earn/btcy/project";
 
-const APR_WINDOW_DAYS = 14;
+const APY_WINDOW_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function unwrap<T>(res: BtcyEnvelope<T>, endpoint: string): T {
@@ -55,9 +53,9 @@ export default defineAdapter({
 
   async fetch() {
     // Rows are daily (bizDate = midnight UTC). Ask for a couple of days more
-    // than the APR window so a late "today" row can't leave it short.
+    // than the APY window so a late "today" row can't leave it short.
     const end = Date.now();
-    const start = end - (APR_WINDOW_DAYS + 3) * DAY_MS;
+    const start = end - (APY_WINDOW_DAYS + 3) * DAY_MS;
 
     // The overview call only carries the headline; statistics is the source
     // of record. Overview failing must not take TVL reporting down with it.
@@ -81,9 +79,7 @@ export default defineAdapter({
     const tvlBtc = requirePositive(latest.btcTvl, "btcTvl");
     const navNow = requirePositive(latest.nav, "nav");
 
-    // Net 14d NAV return, always computed: it is the fallback APR and the
-    // honest cross-reference against Binance's gross headline.
-    const targetDate = Number(latest.bizDate) - APR_WINDOW_DAYS * DAY_MS;
+    const targetDate = Number(latest.bizDate) - APY_WINDOW_DAYS * DAY_MS;
     const baseline = rows.reduce((best, row) =>
       Math.abs(Number(row.bizDate) - targetDate) <
       Math.abs(Number(best.bizDate) - targetDate)
@@ -92,37 +88,33 @@ export default defineAdapter({
     );
     const windowDays =
       (Number(latest.bizDate) - Number(baseline.bizDate)) / DAY_MS;
-    if (windowDays < APR_WINDOW_DAYS / 2) {
+    if (windowDays < APY_WINDOW_DAYS / 2) {
       throw new Error(
         `binance btcy statistics window too short (${windowDays} days)`,
       );
     }
     const navThen = requirePositive(baseline.nav, "baseline nav");
-    const navApr = math.mul(
-      math.mul(math.sub(math.div(navNow, navThen), 1), 365 / windowDays),
+    const apy = math.mul(
+      math.sub(Math.pow(math.div(navNow, navThen), 365 / windowDays), 1),
       100,
     );
 
     // apr14d arrives as a fraction string (0.0022 = 0.22%) or null.
-    const reported = overviewResult?.apr14d
-      ? parseFloat(overviewResult.apr14d)
+    const reportedApr14d = overviewResult?.apr14d
+      ? math.mul(parseFloat(overviewResult.apr14d), 100)
       : null;
-    const useReported = reported !== null && reported > 0;
-    const apr = useReported ? math.mul(reported, 100) : Math.max(navApr, 0);
 
     return [
       {
         symbol: "BTCY",
         tvlBtc,
-        rate: apr,
-        rateType: "apr",
+        rate: apy,
+        rateType: "apy",
         metadata: {
-          // Only relevant when the fallback floors a negative NAV window.
-          allowZeroRate: true,
-          rateSource: useReported ? "binance-apr14d" : "nav-series-fallback",
-          navApr14d: navApr,
+          rateSource: "nav-series-30d-apy",
+          reportedApr14d,
           nav: navNow,
-          nav14dAgo: navThen,
+          nav30dAgo: navThen,
           windowDays,
           tvlAsOf: Number(latest.bizDate),
         },

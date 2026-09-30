@@ -26,14 +26,14 @@ export default defineAdapter({
       getStackingApr(),
     ]);
 
-    // Mixed sum: supplyApy compounds, stackingApr doesn't. Labeled apr
-    // because the stacking APR is ~90% of the total (1.07 of 1.19, 2026-09-17).
+    // Mixed sum: supplyApy compounds, stackingApr doesn't. Labeled apy per
+    // the 2026-09-23 product review (Zest positions compound).
     // getSupplyApy fails soft to 0 (logged); if the stacking component is
     // also 0 the total is a fabricated 0% — fail the run instead.
-    const apr = math.add(supplyApy, stackingApr);
-    if (apr <= 0) {
+    const apy = math.add(supplyApy, stackingApr);
+    if (apy <= 0) {
       throw new Error(
-        `zest-protocol: apr=${apr} (supplyApy=${supplyApy}, stackingApr=${stackingApr}) — both sources broken`,
+        `zest-protocol: apy=${apy} (supplyApy=${supplyApy}, stackingApr=${stackingApr}) — both sources broken`,
       );
     }
 
@@ -41,8 +41,8 @@ export default defineAdapter({
       {
         symbol: "sBTC",
         tvlBtc,
-        rate: apr,
-        rateType: "apr",
+        rate: apy,
+        rateType: "apy",
         metadata: { supplyApy, stackingApr },
       },
     ];

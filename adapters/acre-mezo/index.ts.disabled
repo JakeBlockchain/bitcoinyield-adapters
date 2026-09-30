@@ -3,11 +3,12 @@
  * Copy this as the starting point for a new vault adapter (Lombard Earn,
  * Morpho-style, Solv, etc.).
  *
- * APR is 30-day annualized share-price growth via `readShareGrowth`
+ * APY is 30-day compounded share-price growth via `readShareGrowth`
  * (src/core/utils/yield.ts): it reads `convertToAssets(10^18)` at the latest
  * block and at `latest - blocksBack`, so the chain itself is the history — no
- * warmup. It fails soft to `apr: 0` if the historical read errors (non-archive
- * RPC, chain too young), and the next cycle retries.
+ * warmup. It fails soft to `apy: 0` if the historical read errors (non-archive
+ * RPC, chain too young), and the next cycle retries. A losing window is
+ * published negative.
  *
  * Slug is `acre-mezo` for historical reasons (V1 used Mezo); renaming needs a
  * main-app migration, deferred.
@@ -133,31 +134,23 @@ export default defineAdapter({
         ? (pausedCall.result as boolean)
         : undefined;
 
-    // The dormant vault took a realized drawdown, so 30d share growth can go
-    // negative. The boundary check drops apr < 0 as a presumed parse bug,
-    // which starves the row entirely (July 2026 staleness pages). Floor at 0
-    // (the true current payout) and keep the raw figure in metadata.
-    const apr = Math.max(growth.apr, 0);
-
     return [
       {
         symbol: "tBTC",
         tvlBtc,
-        rate: apr,
-        rateType: "apr",
+        rate: growth.apy,
+        rateType: "apy",
         metadata: {
           // Vault is dormant (share price frozen), so 0% is the true current
-          // rate — opt out of the pipeline's rate=0 rejection. Remove this and
-          // the apr floor above when Acre relaunches so a broken read fails
-          // loudly again.
+          // rate — opt out of the pipeline's rate=0 rejection. Remove this
+          // when Acre relaunches so a broken read fails loudly again.
           allowZeroRate: true,
-          rawApr30d: growth.apr,
+          linearApr30d: growth.apr,
           hasBaseline: growth.hasBaseline,
           vaultAddress: ACRE_VAULT,
           assetAddress,
           sharePrice: growth.sharePriceNow,
           sharePrice30dAgo: growth.sharePriceThen,
-          apy30d: growth.apy,
           windowDays: growth.elapsedDays,
           maxDepositBtc,
           paused,

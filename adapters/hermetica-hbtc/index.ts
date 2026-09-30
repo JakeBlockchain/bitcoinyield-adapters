@@ -2,10 +2,13 @@
  * Hermetica hBTC adapter — on-chain Stacks reads.
  *
  * TVL: `get-total-assets` on the state contract (sats held by the vault).
- * APR: the controller logs one `log-reward` transaction per day with the
- *      day's reward in sats. Sum the last 7 days and annualize against
- *      total assets. Verified against Hermetica's own API to within ~0.1pp;
- *      unlike the API, every input is auditable on-chain.
+ * APY: 30-day compounded share-price growth. The controller logs one
+ *      `log-reward` tx per day, and each commits the vault's new share price
+ *      (net of fees, with losses flagged `is-positive false` applied) in a
+ *      `commit-reward` print event. The baseline is the price committed by
+ *      the earliest log-reward inside the window; the latest is
+ *      `get-share-price` as of `get-last-log-ts`. A losing window comes out
+ *      negative and is published as-is.
  */
 
 import {
@@ -21,21 +24,26 @@ const STATE_CONTRACT = `${DEPLOYER}.state-hbtc-v1`;
 const CONTROLLER_CONTRACT = `${DEPLOYER}.controller-hbtc-v1`;
 
 const HIRO_API = "https://api.hiro.so";
-const APR_WINDOW_DAYS = 7;
-// One log-reward tx lands per day; require most of the window to be present
-// so a Hiro indexing gap can't silently produce a too-low APR.
-const MIN_REWARD_SAMPLES = 5;
+const APY_WINDOW_DAYS = 30;
+// One log-reward lands per day; a much shorter observed window means a Hiro
+// indexing gap, and annualizing it would overweight a few days.
+const MIN_WINDOW_DAYS = 25;
+const SECONDS_PER_DAY = 86_400;
 
 interface HiroTxPage {
   results: Array<{
     tx: {
+      tx_id: string;
       tx_status: string;
       burn_block_time_iso: string;
-      contract_call?: {
-        function_name: string;
-        function_args?: Array<{ repr: string }>;
-      };
+      contract_call?: { function_name: string };
     };
+  }>;
+}
+
+interface HiroTx {
+  events: Array<{
+    contract_log?: { contract_id: string; value: { repr: string } };
   }>;
 }
 
@@ -43,14 +51,14 @@ const PAGE_SIZE = 50;
 const MAX_TX_PAGES = 4;
 
 /**
- * Sum successful log-reward amounts since the cutoff. Paginates: a busy week
- * of unrelated controller txs can push rewards past the first page, which
- * would silently understate APR if we read only page one.
+ * Earliest successful log-reward tx since the cutoff. Paginates: a busy
+ * month of unrelated controller txs can push the window's start past the
+ * first page. Results are newest-first, so the last match wins.
  */
-async function sumRecentRewards(
+async function findWindowStartTx(
   cutoffMs: number,
-): Promise<{ rewardSats: number; rewardTxCount: number }> {
-  let rewardSats = 0;
+): Promise<{ txId: string; rewardTxCount: number }> {
+  let txId: string | null = null;
   let rewardTxCount = 0;
   for (let page = 0; page < MAX_TX_PAGES; page++) {
     const txPage = await http.get<HiroTxPage>(
@@ -65,14 +73,38 @@ async function sumRecentRewards(
       }
       if (tx.tx_status !== "success") continue;
       if (tx.contract_call?.function_name !== "log-reward") continue;
-      const arg = tx.contract_call.function_args?.[0]?.repr;
-      if (!arg?.startsWith("u")) continue;
-      rewardSats += Number(arg.slice(1));
+      txId = tx.tx_id;
       rewardTxCount += 1;
     }
     if (pastCutoff || txPage.results.length < PAGE_SIZE) break;
   }
-  return { rewardSats, rewardTxCount };
+  if (!txId) {
+    throw new Error(
+      `Hermetica: no log-reward txs in the last ${APY_WINDOW_DAYS}d`,
+    );
+  }
+  return { txId, rewardTxCount };
+}
+
+/** Share price (raw, 8 decimals) and log timestamp a log-reward tx committed. */
+async function readCommittedSharePrice(
+  txId: string,
+): Promise<{ sharePriceRaw: number; logTs: number }> {
+  const tx = await http.get<HiroTx>(`${HIRO_API}/extended/v1/tx/${txId}`);
+  const repr = tx.events.find(
+    (e) =>
+      e.contract_log?.contract_id === STATE_CONTRACT &&
+      e.contract_log.value.repr.includes('(action "commit-reward")'),
+  )?.contract_log?.value.repr;
+  const sharePrice = repr?.match(/\(share-price \(tuple \(new u(\d+)\)/)?.[1];
+  const logTs = repr?.match(/\(log-ts u(\d+)\)/)?.[1];
+  if (!sharePrice || !logTs) {
+    throw new Error(`Hermetica: no commit-reward share price in tx ${txId}`);
+  }
+  return {
+    sharePriceRaw: requirePositive(Number(sharePrice), "committed share-price"),
+    logTs: Number(logTs),
+  };
 }
 
 export default defineAdapter({
@@ -84,49 +116,69 @@ export default defineAdapter({
   requires: { stacks: true },
 
   async fetch() {
-    const cutoffMs = Date.now() - APR_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-    const [totalAssetsRaw, rewards] = await Promise.all([
-      stacks.callReadOnly({
-        contract: STATE_CONTRACT,
-        functionName: "get-total-assets",
-      }),
-      sumRecentRewards(cutoffMs),
-    ]);
+    const cutoffMs = Date.now() - APY_WINDOW_DAYS * SECONDS_PER_DAY * 1000;
+    const [totalAssetsRaw, sharePriceRaw, lastLogTsRaw, windowStart] =
+      await Promise.all([
+        stacks.callReadOnly({
+          contract: STATE_CONTRACT,
+          functionName: "get-total-assets",
+        }),
+        stacks.callReadOnly({
+          contract: STATE_CONTRACT,
+          functionName: "get-share-price",
+        }),
+        stacks.callReadOnly({
+          contract: STATE_CONTRACT,
+          functionName: "get-last-log-ts",
+        }),
+        findWindowStartTx(cutoffMs),
+      ]);
 
     const totalAssetsSats = requirePositive(
       Number(totalAssetsRaw),
       "get-total-assets",
     );
-    const { rewardSats, rewardTxCount } = rewards;
+    const sharePriceNowRaw = requirePositive(
+      Number(sharePriceRaw),
+      "get-share-price",
+    );
+    const baseline = await readCommittedSharePrice(windowStart.txId);
 
-    if (rewardTxCount < MIN_REWARD_SAMPLES) {
+    const windowDays =
+      (Number(lastLogTsRaw) - baseline.logTs) / SECONDS_PER_DAY;
+    if (windowDays < MIN_WINDOW_DAYS) {
       throw new Error(
-        `Hermetica: only ${rewardTxCount} log-reward txs in the last ` +
-          `${APR_WINDOW_DAYS}d (expected ~${APR_WINDOW_DAYS}) — refusing to compute APR from a partial window`,
+        `Hermetica: share-price window is only ${windowDays.toFixed(1)}d ` +
+          `(need ${MIN_WINDOW_DAYS}d+) — refusing to annualize a partial window`,
       );
     }
 
-    // One log-reward lands per day, so the sample count IS the observed
-    // window. Dividing by the full 7d when an indexing gap dropped a day
-    // would underreport APR by up to ~29%.
-    const apr = math.mul(
-      math.div(rewardSats, totalAssetsSats),
-      (365 / rewardTxCount) * 100,
+    const apy = math.mul(
+      math.sub(
+        Math.pow(
+          math.div(sharePriceNowRaw, baseline.sharePriceRaw),
+          365 / windowDays,
+        ),
+        1,
+      ),
+      100,
     );
 
     return [
       {
         symbol: "hBTC",
         tvlBtc: math.fromUnits(totalAssetsSats, 8),
-        rate: apr,
-        rateType: "apr",
+        rate: apy,
+        rateType: "apy",
         metadata: {
           stateContract: STATE_CONTRACT,
           controllerContract: CONTROLLER_CONTRACT,
-          rewardSats7d: rewardSats,
-          rewardTxCount,
-          aprWindowDays: APR_WINDOW_DAYS,
-          rateSource: "onchain-log-reward",
+          sharePrice: math.fromUnits(sharePriceNowRaw, 8),
+          sharePriceThen: math.fromUnits(baseline.sharePriceRaw, 8),
+          baselineTxId: windowStart.txId,
+          rewardTxCount: windowStart.rewardTxCount,
+          windowDays,
+          rateSource: "onchain-30d-share-price-apy",
         },
       },
     ];

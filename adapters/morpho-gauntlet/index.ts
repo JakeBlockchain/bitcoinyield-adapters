@@ -1,15 +1,12 @@
 /**
- * Morpho Gauntlet WBTC Core vault adapter — hybrid (TVL on-chain, APR from API).
+ * Morpho Gauntlet WBTC Core vault adapter — on-chain TVL and APY.
  *
- * For a lending vault, realized 30d share-price growth and the forward Net
- * APY diverge (idle liquidity + shifting utilization), and the forward rate
- * is what depositors act on. So: on-chain `totalAssets()` for TVL, Morpho
- * GraphQL `netApy` for the headline rate (an APY, matching Morpho's UI), and the
- * realized delta kept in `metadata.apy30dRealized` for drift auditing.
- *
- * If we onboard 3+ MetaMorpho vaults, reconstruct Net APY on-chain via a
- * shared helper (supplyQueue → per-market IRM rates → weight − fee) and
- * drop the API dependency.
+ * TVL: `totalAssets()`.
+ * APY: realized 30-day compounded share-price growth (`convertToAssets`),
+ *      the site-wide APY standard. Morpho's forward `netApy` / `apy` from
+ *      its GraphQL API are kept in metadata for comparison; they diverge
+ *      from the realized figure with idle liquidity and shifting
+ *      utilization.
  */
 
 import {
@@ -86,10 +83,16 @@ export default defineAdapter({
         blocksBack: BLOCKS_PER_30D.ethereum,
         decimals: ASSET_DECIMALS,
       }),
-      http.graphql<MorphoData>(MORPHO_API, MORPHO_QUERY, {
-        address: VAULT,
-        chainId: CHAIN_ID,
-      }),
+      // Comparison only — an API outage must not take the row down.
+      http
+        .graphql<MorphoData>(MORPHO_API, MORPHO_QUERY, {
+          address: VAULT,
+          chainId: CHAIN_ID,
+        })
+        .catch((err) => {
+          console.warn(`[morpho-gauntlet] Morpho API unavailable: ${err}`);
+          return null;
+        }),
     ]);
 
     const [totalAssetsCall, vaultDecimalsCall, assetCall, maxDepositCall] =
@@ -143,19 +146,20 @@ export default defineAdapter({
         ? maxDepositAsNumber
         : null; // null = effectively uncapped
 
-    const apiNetApy = morphoData.vaultByAddress?.state?.netApy;
-    const apiGrossApy = morphoData.vaultByAddress?.state?.apy;
-    // requirePositive also rejects a present-but-zero APY — a paused vault or
-    // API glitch must fail the run, not store 0%.
-    const apy = math.toPercent(
-      requirePositive(apiNetApy ?? apiGrossApy, "morpho netApy/apy"),
-    );
+    if (!growth.hasBaseline) {
+      throw new Error(
+        "Morpho vault share-price history unavailable on this RPC; need archive access for the 30d window",
+      );
+    }
+
+    const apiNetApy = morphoData?.vaultByAddress?.state?.netApy;
+    const apiGrossApy = morphoData?.vaultByAddress?.state?.apy;
 
     return [
       {
         symbol: "WBTC",
         tvlBtc,
-        rate: apy,
+        rate: growth.apy,
         rateType: "apy",
         metadata: {
           vaultAddress: VAULT,
@@ -164,8 +168,7 @@ export default defineAdapter({
           vaultDecimals: vaultDecimalsCall.result as number,
           sharePrice: growth.sharePriceNow,
           sharePrice30dAgo: growth.sharePriceThen,
-          apy30dRealized: growth.apr, // audit: realized vs forward drift
-          apy30dRealizedCompounded: growth.apy,
+          linearApr30d: growth.apr,
           windowDays: growth.elapsedDays,
           grossApy:
             apiGrossApy !== undefined ? math.toPercent(apiGrossApy) : undefined,
@@ -174,7 +177,7 @@ export default defineAdapter({
           maxDepositBtc, // null = uncapped
           curator: "Gauntlet",
           yieldMechanism: "lending-vault",
-          rateSource: "morpho-api-net-apy",
+          rateSource: "onchain-30d-share-price-apy",
         },
       },
     ];

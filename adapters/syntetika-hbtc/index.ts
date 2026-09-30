@@ -1,9 +1,23 @@
+/**
+ * Syntetika hBTC adapter — ERC-4626 vault on Base.
+ *
+ * TVL: Syntetika's vault API.
+ * APY: 30-day compounded share-price growth (convertToAssets, read on-chain
+ *      now and ~30d ago) plus the live Merkl campaign rate, added as Merkl
+ *      publishes it. The strategy return compounds into the share price, so
+ *      a losing window comes out negative and is published as-is.
+ */
+
 import {
   defineAdapter,
+  ethereum,
+  getEvmClient,
   http,
   math,
+  readShareGrowth,
   requireNumber,
   requirePositive,
+  type EvmChainConfig,
 } from "@bitcoinyield/adapters";
 
 // Syntetika serves its API from this hostname despite the "backup" label —
@@ -15,6 +29,23 @@ const CHAIN_ID = 8453; // Base
 const VAULT_ADDRESS = "0x9C2dCDbDB3F0A0F628D1112bBCABD9AE75353df3";
 const VAULT_ADDRESS_LC = VAULT_ADDRESS.toLowerCase();
 const ASSET_ADDRESS = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf";
+// hBTC and cbBTC are both 8 decimals.
+const ONE_SHARE = 100_000_000n;
+const ASSET_DECIMALS = 8;
+// Base produces a block every 2s, so 1_296_000 blocks ≈ 30 days.
+const BASE_BLOCKS_30D = 1_296_000n;
+
+const BASE: EvmChainConfig = {
+  id: CHAIN_ID,
+  name: "Base",
+  rpcEnv: "BITCOINYIELD_RPC_BASE",
+  fallbackRpcs: [
+    "https://mainnet.base.org",
+    "https://base.drpc.org",
+    "https://base-rpc.publicnode.com",
+  ],
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+};
 
 interface VaultResponse {
   address?: string;
@@ -73,11 +104,21 @@ export default defineAdapter({
   url: "https://syntetika.io",
   category: "yield-bearing",
   custody: "custodial",
+  requires: { rpc: ["base"] },
 
   async fetch() {
-    const [vault, merklApr] = await Promise.all([
+    const [vault, merklApr, growth] = await Promise.all([
       http.get<VaultResponse>(`${API_BASE}/vault/${VAULT_ID}`),
       fetchMerklIncentiveApr(),
+      readShareGrowth({
+        client: getEvmClient(BASE),
+        address: VAULT_ADDRESS,
+        abi: ethereum.erc4626VaultAbi,
+        functionName: "convertToAssets",
+        args: [ONE_SHARE],
+        blocksBack: BASE_BLOCKS_30D,
+        decimals: ASSET_DECIMALS,
+      }),
     ]);
 
     if (vault.address?.toLowerCase() !== VAULT_ADDRESS_LC) {
@@ -92,7 +133,6 @@ export default defineAdapter({
 
     const tvlBtc = requirePositive(vault.tvl, "tvl");
     const tvlUsd = requirePositive(vault.tvl_usd, "tvl_usd");
-    const currentApr = requirePositive(vault.current_apr, "current_apr");
     const providerIncentiveRate = requireNumber(
       vault.rewards_apy,
       "rewards_apy",
@@ -100,23 +140,26 @@ export default defineAdapter({
     const sharePrice = requirePositive(vault.share_price, "share_price");
     const exchangeRate = requirePositive(vault.exchange_rate, "exchange_rate");
 
-    // Syntetika's current APR includes its provider-reported reward component
-    // (rewards_apy mirrors the Merkl campaign rate). Preserve the residual
-    // strategy APR, floored at 0 with the raw figure kept in metadata, then
-    // replace rewards with the live Merkl rate so an ended campaign
-    // contributes zero.
-    const rawStrategyApr = math.sub(currentApr, providerIncentiveRate);
-    const strategyApr = Math.max(rawStrategyApr, 0);
+    if (!growth.hasBaseline) {
+      throw new Error(
+        "Syntetika hBTC share-price history unavailable on this RPC; need archive access for the 30d window",
+      );
+    }
+
+    // Strategy return from the share price, then the live Merkl rate so an
+    // ended campaign contributes zero (provider rewards_apy only if Merkl is
+    // unreachable).
+    const strategyApy = growth.apy;
     const incentiveApr = merklApr ?? providerIncentiveRate;
-    const apr = math.add(strategyApr, incentiveApr);
+    const apy = math.add(strategyApy, incentiveApr);
 
     return [
       {
         symbol: "hBTC",
         tvlBtc,
         tvlUsd,
-        rate: apr,
-        rateType: "apr",
+        rate: apy,
+        rateType: "apy",
         metadata: {
           chain: "Base",
           chainId: CHAIN_ID,
@@ -125,14 +168,15 @@ export default defineAdapter({
           assetSymbol: "cbBTC",
           rateSource:
             merklApr !== null
-              ? "syntetika-residual+merkl-live"
-              : "syntetika-residual+provider-rewards-fallback",
+              ? "onchain-30d-share-price+merkl-live"
+              : "onchain-30d-share-price+provider-rewards-fallback",
           sharePriceCbBtcPerHBtc: sharePrice,
           exchangeRateHBtcPerCbBtc: exchangeRate,
-          strategyApr,
-          rawStrategyApr,
+          strategyApy,
           incentiveApr,
-          ...(merklApr === 0 && rawStrategyApr <= 0 && { allowZeroRate: true }),
+          assetsPerShare30dAgo: growth.sharePriceThen,
+          windowDays: growth.elapsedDays,
+          providerCurrentApr: requireNumber(vault.current_apr, "current_apr"),
         },
       },
     ];

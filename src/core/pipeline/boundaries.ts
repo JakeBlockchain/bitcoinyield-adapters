@@ -4,7 +4,14 @@ export const BOUNDARIES = {
   // Lower bound is permissive — some legitimate adapters report tiny TVL
   // (e.g. Stacks STX-stacking reserve between distribution cycles).
   tvlBtc: { lb: 0.0001, ub: 5_000_000 },
-  rate: { lb: 0, ub: 1_000 },
+  // An APY is a trailing realized return, so a strategy that lost money over
+  // the window is negative — and a depositor withdrawing then gets back less
+  // than they put in. An APR is a simple payout rate and never goes below 0.
+  // -100% is the floor of any real return.
+  rate: {
+    apr: { lb: 0, ub: 1_000 },
+    apy: { lb: -100, ub: 1_000 },
+  },
 };
 
 export interface BoundariesResult {
@@ -58,20 +65,23 @@ function check(row: MetricRow): {
       threshold: BOUNDARIES.tvlBtc.ub,
     };
   }
-  if (row.rate < BOUNDARIES.rate.lb) {
+  // normalize always labels fresh rows; null only exists on stored legacy
+  // rows, which read as apr downstream.
+  const rateBounds = BOUNDARIES.rate[row.rateType ?? "apr"];
+  if (row.rate < rateBounds.lb) {
     return {
       field: "rate",
       value: row.rate,
       bound: "lower",
-      threshold: BOUNDARIES.rate.lb,
+      threshold: rateBounds.lb,
     };
   }
-  if (row.rate > BOUNDARIES.rate.ub) {
+  if (row.rate > rateBounds.ub) {
     return {
       field: "rate",
       value: row.rate,
       bound: "upper",
-      threshold: BOUNDARIES.rate.ub,
+      threshold: rateBounds.ub,
     };
   }
   return null;
