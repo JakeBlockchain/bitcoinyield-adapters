@@ -3,7 +3,10 @@
  * Merlin chain (replaces the earlier Browserbase scrape of merlinchain.io,
  * which kept recording a completed phase's stats instead of the live one).
  *
- * TVL: getPeriodStakeAmount(currentPeriod()), 18 decimals.
+ * TVL: getPeriodStakeAmount summed over every live period, 18 decimals.
+ *      Periods overlap: the next one opens about a day before the current
+ *      one ends (period 5 opened 2026-10-05 with 0 staked while period 4
+ *      still held ~101 BTC), so currentPeriod() alone reads 0 at rollover.
  * APR: the contract stores apr per period (x10_000), but Merlin sets the
  *      live period's apr retroactively, so it reads 0 mid-period. Fall back
  *      to the most recent period whose apr IS set; metadata.rateSource says
@@ -85,20 +88,33 @@ export default defineAdapter({
       functionName: "currentPeriod",
     });
 
-    const [stakeRaw, config] = await Promise.all([
-      client.readContract({
-        address: STAKING_CONTRACT,
-        abi: stakingAbi,
-        functionName: "getPeriodStakeAmount",
-        args: [period],
-      }),
-      client.readContract({
-        address: STAKING_CONTRACT,
-        abi: stakingAbi,
-        functionName: "getPeriodConfig",
-        args: [period],
-      }),
-    ]);
+    const readPeriod = (p: number) =>
+      Promise.all([
+        client.readContract({
+          address: STAKING_CONTRACT,
+          abi: stakingAbi,
+          functionName: "getPeriodStakeAmount",
+          args: [p],
+        }),
+        client.readContract({
+          address: STAKING_CONTRACT,
+          abi: stakingAbi,
+          functionName: "getPeriodConfig",
+          args: [p],
+        }),
+      ]);
+
+    // Walk back from the current period while periods are still running.
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const [currentStake, config] = await readPeriod(period);
+    const livePeriods = [period];
+    let stakeRaw = currentStake;
+    for (let p = period - 1; p >= 0; p--) {
+      const [stake, cfg] = await readPeriod(p);
+      if (cfg.endTimestamp <= nowSeconds) break;
+      livePeriods.push(p);
+      stakeRaw += stake;
+    }
 
     const tvlBtc = requirePositive(math.fromUnits(stakeRaw, 18), "stakeBtc");
 
@@ -128,6 +144,7 @@ export default defineAdapter({
           stakingContract: STAKING_CONTRACT,
           chainId: MERLIN.id,
           period,
+          livePeriods,
           periodStart: config.startTimestamp,
           periodEnd: config.endTimestamp,
           stakeCapBtc: math.fromUnits(config.stakeCap, 18),
