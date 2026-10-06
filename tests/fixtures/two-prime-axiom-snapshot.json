@@ -1,0 +1,69 @@
+{
+  "data": [
+    {
+      "APRs": {
+        "BASE": 1.85,
+        "REWARDS": 0,
+        "GROSS": 1.85,
+        "NET": 1.6,
+        "FEE": 0.25
+      },
+      "APYs": {
+        "BASE": 1.86563557,
+        "GROSS": 1.86563557,
+        "NET": 1.61168729,
+        "FEE": 0.25
+      },
+      "fee": {
+        "PERFORMANCE": "0",
+        "MANAGEMENT": "3290296",
+        "WITHDRAWALS": "0"
+      },
+      "feePercentage": { "PERFORMANCE": 0, "MANAGEMENT": 0.25 },
+      "totalSupply": "150016149371815599353",
+      "price": "100069063",
+      "vaultId": "6aa2b5dacbaa03cb8d7bf0b7",
+      "vaultAddress": "0xD1624bb76743dd8dC8D8043246e7338A5CD23772",
+      "block": { "number": 26129661, "timestamp": 1791245387 },
+      "_id": "6ac43c5a1bc92e41e135d971",
+      "createdAt": "2026-10-06T00:10:02.968Z",
+      "updatedAt": "2026-10-06T00:10:02.968Z",
+      "interest": { "GROSS": "24348190", "NET": "21057894", "FEE": "3290296" },
+      "lastInterest": {
+        "GROSS": "10360445",
+        "NET": "7070149",
+        "FEE": "3290296"
+      },
+      "TVL": {
+        "token": "15011975626",
+        "USD": "12842208680232",
+        "withRequestsToken": "15011975626",
+        "withRequestsUSD": "12842208680232"
+      },
+      "integrators": [],
+      "cdoEpoch": {
+        "apr": 1.85,
+        "lastInterest": "10360445",
+        "expectedInterest": "24348190",
+        "unclaimedFees": "0",
+        "deposits": "0",
+        "duration": 2678400,
+        "status": "RUNNING",
+        "apr0TotalPrincipal": "0",
+        "contractValue": "15011975626",
+        "strategyTokenBalance": "15011975626",
+        "managedNav": "15011975626",
+        "strategyToken": "0x74E862277B5BEC233E2f1b0272CE1e215462507a",
+        "lastApr": 0,
+        "startDate": "2026-10-02T13:10:23.000Z",
+        "endDate": "2026-11-02T13:10:23.000Z",
+        "epochNumber": 1,
+        "bufferDuration": 86400,
+        "withdrawType": "STANDARD",
+        "withdraws": { "amount": "0", "fees": "0", "interest": "0" },
+        "depositQueue": { "amount": "0", "lastAmount": "0" }
+      }
+    }
+  ],
+  "totalCount": 1
+}
