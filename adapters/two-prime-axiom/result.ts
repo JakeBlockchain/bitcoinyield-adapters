@@ -49,23 +49,25 @@ export function buildResult(
   const performanceFeePct = math.toPercent(
     math.div(chain.performanceFee, chain.feeScale),
   );
-  if (performanceFeePct > 100 || managementFeePct > grossApr) {
-    throw new Error("Axiom: fees exceed the quoted lending yield");
+  if (performanceFeePct > 100) {
+    throw new Error("Axiom: performance fee exceeds 100%");
   }
-  // Check published terms against current on-chain configuration. Do not
-  // silently keep yesterday's rate after an administrator changes the terms.
-  const expectedNetApr = math.mul(
-    math.sub(grossApr, managementFeePct),
+  // Mirrors the vault's _netGainAfterFees: management fee first, then the
+  // performance fee on what remains; nothing is paid when fees exceed the gain.
+  const netApr = math.mul(
+    Math.max(0, math.sub(grossApr, managementFeePct)),
     math.sub(1, math.div(performanceFeePct, 100)),
   );
-  if (
-    Math.abs(source.grossApr - grossApr) > 1e-8 ||
-    Math.abs(source.managementFeePct - managementFeePct) > 1e-8 ||
-    Math.abs(source.performanceFeePct - performanceFeePct) > 1e-8 ||
-    Math.abs(source.netApr - expectedNetApr) > 1e-6
-  ) {
-    throw new Error(
-      "Axiom: published rate/fees disagree with current contract terms",
+  // The API refreshes daily, so it lags on-chain term changes. A mismatch is
+  // recorded rather than failing the run; the rate always follows the chain.
+  const sourceTermsMatch =
+    Math.abs(source.grossApr - grossApr) <= 1e-8 &&
+    Math.abs(source.managementFeePct - managementFeePct) <= 1e-8 &&
+    Math.abs(source.performanceFeePct - performanceFeePct) <= 1e-8 &&
+    Math.abs(source.netApr - netApr) <= 1e-6;
+  if (!sourceTermsMatch) {
+    console.warn(
+      `[two-prime-axiom] Pareto snapshot (net ${source.netApr}%) lags on-chain terms (net ${netApr}%)`,
     );
   }
   if (BigInt(source.blockNumber) > chain.blockNumber) {
@@ -78,11 +80,12 @@ export function buildResult(
       math.fromUnits(chain.contractValue, 8),
       "Axiom contract NAV",
     ),
-    // This is Pareto's published APR, not its projected APY and not realized NAV growth.
-    rate: source.netApr,
+    // Current net lending APR from on-chain terms, not Pareto's projected APY
+    // and not realized NAV growth.
+    rate: netApr,
     rateType: "apr",
     metadata: {
-      ...(source.netApr === 0 && { allowZeroRate: true }),
+      ...(netApr === 0 && { allowZeroRate: true }),
       chain: "ethereum",
       vaultAddress: VAULT,
       tokenAddress: LP_TOKEN,
@@ -95,9 +98,13 @@ export function buildResult(
       tvlBlockNumber: chain.blockNumber.toString(),
       tvlAsOf: chainAsOf,
       providerTvlBtc: source.tvlBtc,
-      rateBasis: "provider-quoted-net-lending",
+      rateBasis: "onchain-net-lending-terms",
       rateWindow: "current-loan-terms",
-      rateSource: SNAPSHOT_URL,
+      rateSource: "unscaledApr() net of managementFee() and fee()",
+      rateBlockNumber: chain.blockNumber.toString(),
+      sourceUrl: SNAPSHOT_URL,
+      sourceNetApr: source.netApr,
+      sourceTermsMatch,
       sourceAsOf: source.asOf,
       sourceUpdatedAt: source.updatedAt,
       sourceBlockNumber: source.blockNumber,

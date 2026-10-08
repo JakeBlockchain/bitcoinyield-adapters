@@ -147,47 +147,53 @@ test("fails on contract configuration changes, default, missing NAV or lagging R
     assert.throws(() => buildResult(source, { ...chain, ...patch }));
 });
 
-test("does not carry stale rate terms forward after an on-chain change", () => {
+test("follows on-chain terms when the daily API snapshot lags a change", () => {
   const source = parseSnapshot(fixture(), now);
-  for (const patch of [
-    { managementFee: 500n },
-    { performanceFee: 1000n },
-    { grossApr: 2000000000000000000n },
-  ])
-    assert.throws(
-      () => buildResult(source, { ...chain, ...patch }),
-      /disagree/,
-    );
-  assert.throws(
-    () => buildResult({ ...source, netApr: 1.85 }, chain),
-    /disagree/,
+  for (const [patch, rate] of [
+    [{ managementFee: 500n }, 1.35],
+    [{ performanceFee: 10000n }, 1.44],
+    [{ grossApr: 2000000000000000000n }, 1.75],
+  ] as const) {
+    const row = buildResult(source, { ...chain, ...patch });
+    assert.equal(row.rate, rate);
+    assert.equal(row.metadata?.sourceTermsMatch, false);
+    assert.equal(row.metadata?.sourceNetApr, 1.6);
+  }
+  assert.equal(buildResult(source, chain).metadata?.sourceTermsMatch, true);
+  assert.equal(
+    buildResult({ ...source, netApr: 1.85 }, chain).metadata?.sourceTermsMatch,
+    false,
   );
 });
 
-test("compares fees in percentages, applying management before performance fees", () => {
+test("applies management before performance fees, as the vault does", () => {
   const source = parseSnapshot(fixture(), now);
   const row = buildResult(
     { ...source, performanceFeePct: 10, netApr: 1.44 },
     { ...chain, performanceFee: 10000n },
   );
   assert.equal(row.rate, 1.44);
+  assert.equal(row.metadata?.sourceTermsMatch, true);
+  assert.throws(
+    () => buildResult(source, { ...chain, performanceFee: 100001n }),
+    /performance fee/,
+  );
 });
 
-test("preserves an explicitly published zero APR only when chain terms confirm it", () => {
+test("reports a zero net APR when fees consume the gross rate", () => {
   const source = parseSnapshot(fixture(), now);
-  const row = buildResult(
-    { ...source, grossApr: 0.25, netApr: 0, projectedNetApy: 0 },
-    { ...chain, grossApr: 250000000000000000n },
-  );
-  assert.equal(row.rate, 0);
-  assert.equal(row.metadata?.allowZeroRate, true);
-  assert.equal(
-    normalize(
-      [row],
-      { slug: "two-prime-axiom" } as Adapter,
-      100000,
-      new Date(now),
-    )[0]?.rate,
-    0,
-  );
+  for (const grossApr of [250000000000000000n, 100000000000000000n, 0n]) {
+    const row = buildResult(source, { ...chain, grossApr });
+    assert.equal(row.rate, 0);
+    assert.equal(row.metadata?.allowZeroRate, true);
+    assert.equal(
+      normalize(
+        [row],
+        { slug: "two-prime-axiom" } as Adapter,
+        100000,
+        new Date(now),
+      )[0]?.rate,
+      0,
+    );
+  }
 });

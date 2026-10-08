@@ -10,17 +10,20 @@ Redemptions follow the facility's cycle and eligibility requirements.
 - **TVL:** the vault's `getContractValue()`, divided by 10^8. This is recorded
   WBTC credit NAV, not WBTC cash in the contract. No strategy-token double counting,
   queued deposits, other Pareto vaults, or first-loss pledge is added.
-- **Headline:** Pareto's published `APRs.NET`, with `rateType: "apr"`.
-  It is the quoted current lending rate net of management and performance fees,
-  not a trailing payout or realized return. `rateWindow: "current-loan-terms"`
-  makes the lack of a trailing window explicit. No APY-to-APR conversion occurs.
+- **Headline:** current net lending APR from on-chain terms, with `rateType: "apr"`:
+  `max(0, unscaledApr() - annual management fee) * (1 - performance fee / 100)`.
+  This mirrors the vault's `_netGainAfterFees` (management fee first, then the
+  performance fee on the remainder; nothing paid when fees exceed the gain), and
+  equals Pareto's published `APRs.NET`. It is a quoted rate, not a trailing
+  payout; `rateWindow: "current-loan-terms"` makes that explicit. Use
+  `unscaledApr()`: `getApr()` adjusts for the epoch/buffer and would overstate
+  the calendar-year rate.
+- **Cross-check:** Pareto's snapshot refreshes daily (~00:10 UTC), so it lags an
+  on-chain term change. A disagreement sets `metadata.sourceTermsMatch: false`
+  and logs a warning instead of failing the run; `sourceNetApr` keeps Pareto's
+  figure. A net APR of 0 (fees consume the gross rate) is reported as 0.
 - **Projected APY:** Pareto's `APYs.NET` is kept in `metadata.projectedNetApy`.
   It assumes compounding and is not the repository's trailing 30-day realized APY.
-- **Rate checks:** current `unscaledApr()`, `managementFee()`, `fee()` and
-  `FULL_ALLOC()` must agree with the API. Net APR is checked against
-  `(gross APR - annual management fee) * (1 - performance fee / 100)`.
-  Use `unscaledApr()`: `getApr()` adjusts for the epoch/buffer and would overstate
-  the calendar-year rate if used directly.
 - **USD:** left to the framework's canonical BTC price; it can differ from
   Pareto's older USD valuation. WBTC is treated as BTC-denominated exposure.
 
@@ -39,9 +42,8 @@ use `api.pareto.credit` directly. Transport uses the shared HTTP retries/timeout
 | WBTC                   | `0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599` |
 
 All chain reads are pinned to one block. Token, LP and strategy identities are
-checked. Reverted reads, defaulted vaults, bad/missing data or a mismatch between
-API and chain terms fail the run instead of persisting a fabricated zero.
-An explicitly published zero net APR is accepted only when chain terms match.
+checked. Reverted reads, defaulted vaults or bad/missing data fail the run instead of
+persisting a fabricated zero.
 
 ## Update cadence and freshness
 
