@@ -19,6 +19,7 @@ import mezoEarn from '../adapters/mezo-earn/index.js'
 import midasMhyperbtc from '../adapters/midas-mhyperbtc/index.js'
 import morphoGauntlet from '../adapters/morpho-gauntlet/index.js'
 import solvBtcPlus from '../adapters/solv-btc-plus/index.js'
+import stackingDaoStbtc from '../adapters/stacking-dao-stbtc/index.js'
 import starknet from '../adapters/starknet/index.js'
 import syntetikaHbtc from '../adapters/syntetika-hbtc/index.js'
 import sypherCapitalBitcoinYieldFund from '../adapters/sypher-capital-bitcoin-yield-fund/index.js'
@@ -46,6 +47,7 @@ export const adapters: Record<string, Adapter> = {
   "midas-mhyperbtc": midasMhyperbtc,
   "morpho-gauntlet": morphoGauntlet,
   "solv-btc-plus": solvBtcPlus,
+  "stacking-dao-stbtc": stackingDaoStbtc,
   starknet,
   "syntetika-hbtc": syntetikaHbtc,
   "sypher-capital-bitcoin-yield-fund": sypherCapitalBitcoinYieldFund,
